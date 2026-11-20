@@ -74,7 +74,7 @@ class ReceiverTests(TestCase):
         self.assertNotIn("secret_token", " ".join(Notification.objects.values_list("text", flat=True)))
 
     def test_crashed_worker_requires_manual_lock_removal_then_marks_uncertain(self):
-        TelegramPollState.objects.create(chat_id=1234, user_id=5678, next_offset=8, last_update_at=timezone.now())
+        TelegramPollState.objects.create(chat_id=1234, user_id=5678, bot_id=123, next_offset=8, last_update_at=timezone.now())
         TelegramCommand.objects.create(update_id=7, text="/racedata", status="running")
         TelegramPollLock.objects.create()
         with self.assertRaises(ReceiverError):
@@ -107,10 +107,63 @@ class ReceiverTests(TestCase):
         for key, value in [("TELEGRAM_CHAT_ID", "@name"), ("TELEGRAM_CHAT_ID", "-100"), ("TELEGRAM_USER_ID", "0")]:
             with self.subTest(key=key), patch.dict("os.environ", {key: value}), self.assertRaises((ReceiverError, ValueError)):
                 run_receiver(once=True)
-        TelegramPollState.objects.create(chat_id=1, user_id=5678)
+        TelegramPollState.objects.create(chat_id=1, user_id=5678, bot_id=123)
         with self.assertRaises(ReceiverError), patch("notifications.commands_handler._get_updates") as poll:
             run_receiver(once=True)
         poll.assert_not_called()
+
+    def test_bot_identity_is_bound_and_secret_rotation_is_allowed(self):
+        self.run_with([update(1)], MagicMock(return_value="done"))
+        state = TelegramPollState.objects.get()
+        self.assertEqual((state.bot_id, state.next_offset), (123, 2))
+        with patch.dict("os.environ", {"TELEGRAM_BOT_TOKEN": "123:replacement_secret"}):
+            with patch("notifications.commands_handler._get_updates", return_value=[]) as poll:
+                run_receiver(once=True)
+            self.assertEqual(poll.call_args.args[1], 2)
+        state.refresh_from_db()
+        self.assertEqual((state.bot_id, state.next_offset), (123, 2))
+        self.assertNotIn("secret", str(state.__dict__))
+
+    def test_other_bot_fails_before_poll_or_command_execution(self):
+        state = TelegramPollState.objects.create(
+            chat_id=1234, user_id=5678, bot_id=123, next_offset=20, last_update_at=timezone.now()
+        )
+        command = TelegramCommand.objects.create(update_id=19, text="/racedata")
+        with patch.dict("os.environ", {"TELEGRAM_BOT_TOKEN": "456:other_secret"}), \
+                patch("notifications.commands_handler._get_updates") as poll, \
+                patch("notifications.commands_handler._execute_pending") as execute:
+            with self.assertRaisesMessage(ReceiverError, "identity changed") as error:
+                run_receiver(once=True)
+        self.assertNotIn("other_secret", str(error.exception))
+        poll.assert_not_called()
+        execute.assert_not_called()
+        state.refresh_from_db()
+        command.refresh_from_db()
+        self.assertEqual((state.bot_id, state.next_offset, command.status), (123, 20, "pending"))
+        self.assertFalse(TelegramPollLock.objects.exists())
+
+    def test_legacy_missing_bot_identity_fails_closed_even_with_empty_cursor(self):
+        state = TelegramPollState.objects.create(chat_id=1234, user_id=5678)
+        for offset in (0, 10):
+            state.next_offset = offset
+            state.last_update_at = timezone.now()
+            state.save()
+            with patch("notifications.commands_handler._get_updates") as poll:
+                with self.assertRaisesMessage(ReceiverError, "identity changed"):
+                    run_receiver(once=True)
+            poll.assert_not_called()
+            state.refresh_from_db()
+            self.assertIsNone(state.bot_id)
+            self.assertEqual(state.next_offset, offset)
+
+    def test_invalid_bot_prefix_is_rejected(self):
+        for prefix in ("0", "0123", "9223372036854775808", "12345678901234567890"):
+            with self.subTest(prefix=prefix), patch.dict("os.environ", {"TELEGRAM_BOT_TOKEN": f"{prefix}:secret"}):
+                with patch("notifications.commands_handler._get_updates") as poll:
+                    with self.assertRaises(ReceiverError):
+                        run_receiver(once=True)
+                poll.assert_not_called()
+        self.assertFalse(TelegramPollState.objects.exists())
 
     def test_chat_can_come_from_credentials_file(self):
         with patch("notifications.credentials.read_credentials_file", return_value={"TELEGRAM_CHAT_ID": "1234"}):
@@ -138,7 +191,7 @@ class ReceiverTests(TestCase):
         module.handle_command.assert_called_once()
 
     def test_batch_and_offset_are_atomic(self):
-        TelegramPollState.objects.create(chat_id=1234, user_id=5678)
+        TelegramPollState.objects.create(chat_id=1234, user_id=5678, bot_id=123)
         with patch("notifications.commands_handler.TelegramCommand.objects.get_or_create", side_effect=IntegrityError):
             with self.assertRaises(IntegrityError):
                 _store_updates([update(1)], 1234, 5678)
@@ -147,7 +200,7 @@ class ReceiverTests(TestCase):
 
     def test_idle_cursor_stops_before_poll_and_never_acks_lower_new_ids(self):
         state = TelegramPollState.objects.create(
-            chat_id=1234, user_id=5678, next_offset=100,
+            chat_id=1234, user_id=5678, bot_id=123, next_offset=100,
             last_update_at=timezone.now() - timedelta(days=5),
         )
         with patch("notifications.commands_handler._get_updates", return_value=[update(1)]) as poll:
@@ -172,7 +225,7 @@ class ReceiverTests(TestCase):
 
     def test_unrecognized_update_still_advances_idle_timestamp(self):
         state = TelegramPollState.objects.create(
-            chat_id=1234, user_id=5678, next_offset=5,
+            chat_id=1234, user_id=5678, bot_id=123, next_offset=5,
             last_update_at=timezone.now() - timedelta(days=4, hours=23),
         )
         self.run_with([update(5, user=9)], MagicMock(return_value="unused"))
@@ -183,7 +236,7 @@ class ReceiverTests(TestCase):
 
     def test_work_delaying_poll_across_idle_limit_is_rechecked(self):
         state = TelegramPollState.objects.create(
-            chat_id=1234, user_id=5678, next_offset=5, last_update_at=timezone.now(),
+            chat_id=1234, user_id=5678, bot_id=123, next_offset=5, last_update_at=timezone.now(),
         )
 
         def delay():
@@ -198,7 +251,7 @@ class ReceiverTests(TestCase):
         poll.assert_not_called()
 
     def test_legacy_cursor_and_future_timestamp_fail_closed(self):
-        state = TelegramPollState.objects.create(chat_id=1234, user_id=5678, next_offset=2)
+        state = TelegramPollState.objects.create(chat_id=1234, user_id=5678, bot_id=123, next_offset=2)
         for value in [None, timezone.now() + timedelta(days=1)]:
             state.last_update_at = value
             state.save(update_fields=["last_update_at"])
@@ -208,7 +261,7 @@ class ReceiverTests(TestCase):
             poll.assert_not_called()
 
     def test_cursor_reset_and_update_id_collision_fail_closed(self):
-        state = TelegramPollState.objects.create(chat_id=1234, user_id=5678)
+        state = TelegramPollState.objects.create(chat_id=1234, user_id=5678, bot_id=123)
         TelegramCommand.objects.create(update_id=10, text="/racedata")
         with patch("notifications.commands_handler._get_updates") as poll:
             with self.assertRaisesMessage(ReceiverError, "Inbox exists without a cursor"):

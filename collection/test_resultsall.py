@@ -235,3 +235,28 @@ class CollectResultsTests(TestCase):
             payload = collect_results(URL, terms_reviewed=True)[0].payload
         self.assertEqual(payload["race_number"], 1)
         self.assertEqual(payload["results"][0]["horse_name"], "Race 2")
+
+    def test_multi_cell_heading_row_precedes_nested_result_table(self):
+        html = """<h2>Race 1</h2>
+        <table><tr><th>Placing</th><th>Horse No.</th></tr>
+        <tr><td>1</td><td>7</td></tr></table>
+        <table><tr><td><h2>Race 2</h2></td><td>Race details</td></tr>
+        <tr><td><table><tr><th>Placing</th><th>Horse No.</th></tr>
+        <tr><td>1</td><td>8</td></tr></table></td></tr></table>"""
+        with patch("collection.fetch.PublicFetcher.fetch", return_value=html):
+            payloads = [o.payload for o in collect_results(URL, terms_reviewed=True)]
+        self.assertEqual([(p["race_number"], [r["horse_no"] for r in p["results"]])
+                          for p in payloads], [(1, ["7"]), (2, ["8"])])
+
+    def test_ambiguous_marker_row_clears_previous_race_until_safe_marker(self):
+        html = """<h2>Race 1</h2><table>
+        <tr><th>Placing</th><th>Horse No.</th></tr><tr><td>1</td><td>7</td></tr></table>
+        <table><tr><td><h2>Race 2</h2></td><td><h2>Race 3</h2></td></tr>
+        <tr><td><table><tr><th>Placing</th><th>Horse No.</th></tr>
+        <tr><td>1</td><td>8</td></tr></table></td></tr></table>
+        <h2>Race 4</h2><table><tr><th>Placing</th><th>Horse No.</th></tr>
+        <tr><td>1</td><td>9</td></tr></table>"""
+        with patch("collection.fetch.PublicFetcher.fetch", return_value=html):
+            payloads = [o.payload for o in collect_results(URL, terms_reviewed=True)]
+        self.assertEqual([(p["race_number"], [r["horse_no"] for r in p["results"]])
+                          for p in payloads], [(1, ["7"]), (4, ["9"])])

@@ -56,6 +56,30 @@ class _Page(HTMLParser):
         if match:
             self.events.append(("race", int(match.group(1) or match.group(2))))
 
+    def _row_markers(self, table, include_current=False):
+        if table["data_table"]:
+            return
+        cells = [value for value, _ in table["row"] or []]
+        if include_current and table["cell"] is not None:
+            cells.append(_text(table["cell"][0]))
+        candidates = []
+        strong = False
+        for tag, text in table["markers"]:
+            match = _RACE.fullmatch(text)
+            if match:
+                candidates.append(int(match.group(1) or match.group(2)))
+                strong |= tag in {"h1", "h2", "h3", "h4", "h5", "h6"}
+        for text in cells:
+            match = _RACE.fullmatch(text)
+            if match:
+                candidates.append(int(match.group(1) or match.group(2)))
+                strong |= len(cells) == 1
+        if candidates:
+            if strong and len(set(candidates)) == 1:
+                self.events.append(("race", candidates[0]))
+            else:
+                self.events.append(("ambiguous", None))
+
     def handle_starttag(self, tag, attrs):
         if tag in {"script", "style", "noscript"}:
             self.ignored += 1
@@ -65,14 +89,12 @@ class _Page(HTMLParser):
             if self.tables:
                 parent = self.tables[-1]
                 parent["invalid"] = True
-                if not parent["data_table"]:
-                    for marker in parent["markers"]:
-                        self._marker(marker)
+                self._row_markers(parent, include_current=True)
                 parent["markers"] = []
                 if parent["cell"] is not None:
-                    if not parent["data_table"]:
-                        self._marker(parent["cell"][0])
                     parent["cell"][0] = ""
+                if parent["row"] is not None:
+                    parent["row"] = []
                 for block in parent["blocks"]:
                     block[1] = ""
             self.tables.append({"rows": [], "row": None, "cell": None, "invalid": False,
@@ -121,8 +143,7 @@ class _Page(HTMLParser):
                 field, _ = _extract_table([table["row"]])
                 if field:
                     table["data_table"] = True
-                if len(table["row"]) == 1 and not table["data_table"]:
-                    self._marker(table["row"][0][0])
+                self._row_markers(table)
                 table["rows"].append(table["row"])
                 table["row"] = None
                 table["markers"] = []
@@ -136,7 +157,7 @@ class _Page(HTMLParser):
                 _, text = table["blocks"].pop()
                 self.events.append(("text", _text(text)))
                 if not table["data_table"] and _RACE.fullmatch(_text(text)):
-                    table["markers"].append(_text(text))
+                    table["markers"].append((tag, _text(text)))
         elif self.blocks and tag == self.blocks[-1][0]:
             _, text = self.blocks.pop()
             self._marker(text)
@@ -291,7 +312,9 @@ def _extract(html, parameters):
         elif kind == "race":
             current = value
             races.setdefault(current, {"race_number": current, "results": [], "dividends": []})
-        elif current is not None:
+        elif kind == "ambiguous":
+            current = None
+        elif kind == "table" and current is not None:
             field, records = _extract_table(value)
             if field and records:
                 races[current][field].extend(records)

@@ -26,13 +26,14 @@ MAX_IDLE = timedelta(days=5)
 
 def _configuration():
     token, outgoing_chat = _credentials()
+    bot_prefix = token.split(":", 1)[0]
     chat = outgoing_chat
     user = os.environ.get("TELEGRAM_USER_ID", "")
-    if not re.fullmatch(r"[1-9][0-9]{0,18}", chat) or not re.fullmatch(r"[1-9][0-9]{0,18}", user):
-        raise ReceiverError("Private chat and user IDs must be positive numeric values.")
-    if int(chat) > 2**63 - 1 or int(user) > 2**63 - 1:
-        raise ReceiverError("Invalid Telegram destination or user ID.")
-    return token, int(chat), int(user)
+    if any(not re.fullmatch(r"[1-9][0-9]{0,18}", value) for value in (bot_prefix, chat, user)):
+        raise ReceiverError("Bot, private chat and user IDs must be positive numeric values.")
+    if any(int(value) > 2**63 - 1 for value in (bot_prefix, chat, user)):
+        raise ReceiverError("Invalid Telegram bot, destination or user ID.")
+    return token, int(chat), int(user), int(bot_prefix)
 
 
 def _get_updates(token, offset, poll_timeout):
@@ -185,7 +186,7 @@ def run_receiver(*, once=False, poll_timeout=25):
     """Run one worker; a crash leaves its lock for explicit operator recovery."""
     if not isinstance(poll_timeout, int) or not 1 <= poll_timeout <= 50:
         raise ReceiverError("Poll timeout must be between 1 and 50 seconds.")
-    token, chat_id, user_id = _configuration()
+    token, chat_id, user_id, bot_id = _configuration()
     try:
         with transaction.atomic():
             TelegramPollLock.objects.create(pk=1)
@@ -193,9 +194,9 @@ def run_receiver(*, once=False, poll_timeout=25):
         raise ReceiverError("Receiver lock exists; verify the previous worker is stopped before removing it.") from None
     try:
         state, _ = TelegramPollState.objects.get_or_create(
-            pk=1, defaults={"chat_id": chat_id, "user_id": user_id}
+            pk=1, defaults={"chat_id": chat_id, "user_id": user_id, "bot_id": bot_id}
         )
-        if (state.chat_id, state.user_id) != (chat_id, user_id):
+        if (state.chat_id, state.user_id, state.bot_id) != (chat_id, user_id, bot_id):
             raise ReceiverError("Receiver identity changed; reconcile the inbox and poll state before reconfiguring.")
         _recover_uncertain()
         while True:

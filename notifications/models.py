@@ -51,6 +51,7 @@ class TelegramPollState(models.Model):
     chat_id = models.BigIntegerField()
     user_id = models.BigIntegerField()
     last_update_at = models.DateTimeField(null=True, blank=True)
+    bot_id = models.BigIntegerField(null=True, blank=True)
 
 
 class TelegramPollLock(models.Model):
