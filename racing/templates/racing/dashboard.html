@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>賽馬報告儀表板</title>
+</head>
+<body>
+  <h1>賽馬報告儀表板</h1>
+  <nav>
+    <a href="{% url 'admin:index' %}">管理後台</a> |
+    <a href="{% url 'admin:index' %}racing/sourcepost/">來源資料</a> |
+    <a href="{% url 'admin:index' %}racing/raceresult/">賽果</a> |
+    <a href="{% url 'admin:index' %}racing/actualbet/">實際投注</a> |
+    <a href="{% url 'admin:index' %}notifications/notification/">通知管理</a>
+  </nav>
+  <p>以下為假設結算，並非回測，也不保證未來表現。
+    賽果及派彩須經核實；退賽及平頭馬可能需要人手處理。
+    初出賽馬匹、來源不完整及賽事狀況變化均會增加風險。</p>
+
+  <h2>候選賽事</h2>
+  <p>按合資格的獨立來源數目排名，最多五場，不會強行湊足。</p>
+  <ol>
+    {% for candidate in candidates %}
+      <li>{{ candidate.race }} — {{ candidate.score }} 個獨立來源
+        <ul>{% for item in candidate.runners %}
+          <li>#{{ item.runner.number }} {{ item.runner.name }} — {{ item.score }} 個來源{% if item.runner.first_time %}（初出賽馬匹風險）{% endif %}</li>
+        {% endfor %}</ul>
+      </li>
+    {% empty %}<li>沒有合資格的候選賽事；已核實的來源資料或賽事不足。</li>{% endfor %}
+  </ol>
+
+  <h2>假設結算</h2>
+  <p>每場賽事只採用最早發布的預測，並按最新版本賽果結算。
+    待定或須人手處理的賽果不計入總額。投資回報率（ROI）為利潤除以已結算投注額。</p>
+  <p>預測命中率：{% if hit_rate_percent is not None %}{{ hit_rate_percent|floatformat:2 }}%（{{ hit_count }} / {{ final_races }} 場）{% else %}賽果不足{% endif %}。
+    命中指選馬包含前三名，不計退款、作廢、待定及須人手處理的賽事。</p>
+  <p>中獎場數指有派彩的正式賽果；獲利場數指派彩高於投注額的正式賽果，兩者不包括退款。</p>
+  <table>
+    <thead><tr><th>策略</th><th>已結算賽事</th><th>中獎場數</th><th>獲利場數</th><th>投注額</th><th>派彩</th><th>利潤</th><th>回報率</th></tr></thead>
+    <tbody>
+      <tr><th>三重彩（Tierce）</th><td>{{ tierce.count }}</td><td>{{ tierce.winning_races }}</td><td>{{ tierce.profitable_races }}</td><td>{{ tierce.stake|floatformat:2 }}</td><td>{{ tierce.payout|floatformat:2 }}</td><td>{{ tierce.profit|floatformat:2 }}</td><td>{% if tierce.roi_percent is not None %}{{ tierce.roi_percent|floatformat:2 }}%{% else %}賽果不足{% endif %}</td></tr>
+      <tr><th>單T（Trio）</th><td>{{ trio.count }}</td><td>{{ trio.winning_races }}</td><td>{{ trio.profitable_races }}</td><td>{{ trio.stake|floatformat:2 }}</td><td>{{ trio.payout|floatformat:2 }}</td><td>{{ trio.profit|floatformat:2 }}</td><td>{% if trio.roi_percent is not None %}{{ trio.roi_percent|floatformat:2 }}%{% else %}賽果不足{% endif %}</td></tr>
+      <tr><th>單T（與三重彩相同預算）</th><td>{{ trio_same_budget.count }}</td><td>{{ trio_same_budget.winning_races }}</td><td>{{ trio_same_budget.profitable_races }}</td><td>{{ trio_same_budget.stake|floatformat:2 }}</td><td>{{ trio_same_budget.payout|floatformat:2 }}</td><td>{{ trio_same_budget.profit|floatformat:2 }}</td><td>{% if trio_same_budget.roi_percent is not None %}{{ trio_same_budget.roi_percent|floatformat:2 }}%{% else %}賽果不足{% endif %}</td></tr>
+    </tbody>
+  </table>
+  <ul>
+    {% for row in simulations %}
+      <li>{{ row.prediction.race }} — 預測第 {{ row.prediction.version }} 版，
+        {% if row.settlement.result_version %}賽果第 {{ row.settlement.result_version }} 版{% else %}尚無賽果{% endif %}：
+        {{ row.settlement.status }}.
+        {% if row.settlement.reason %}所選馬匹退賽或資料缺失，須按投注組合人手結算。{% endif %}
+        選馬：{% for runner in row.prediction.inputs.selections %}#{{ runner.number }} {{ runner.name }}{% if not forloop.last %}、{% endif %}{% endfor %}。
+        {% if row.prediction.inputs.first_timer_risk %}有初出賽馬匹風險。{% endif %}
+      </li>
+    {% empty %}<li>沒有已發布的預測；賽果不足。</li>{% endfor %}
+  </ul>
+
+  <h2>實際投注（與模擬分開計算）</h2>
+  <p>已結算投注：{{ actual.count }}；派彩待定：{{ pending_bets }}。
+    待定投注不計入投注額及派彩總額。派彩包括已記錄的退款。</p>
+  <p>投注額：{{ actual.stake|floatformat:2 }}；派彩：{{ actual.payout|floatformat:2 }}；
+    利潤：{{ actual.profit|floatformat:2 }}；
+    回報率：{% if actual.roi_percent is not None %}{{ actual.roi_percent|floatformat:2 }}%{% else %}賽果不足{% endif %}。</p>
+
+  <h2>通知狀態</h2>
+  <ul>{% for status in notification_counts %}<li>{{ status.label }}: {{ status.count }}</li>{% endfor %}</ul>
+  <p>最近一次處理工作：
+    {% if latest_job %}{{ latest_job.get_status_display }} ({{ latest_job.started_at }})
+    {% else %}沒有處理工作記錄。{% endif %}</p>
+</body>
+</html>
