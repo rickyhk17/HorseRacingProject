@@ -1,7 +1,6 @@
 """Durable, conservative Telegram outbox processing."""
 
 import json
-import os
 import re
 import uuid
 from datetime import timedelta
@@ -12,6 +11,7 @@ from urllib.request import HTTPRedirectHandler, ProxyHandler, Request, build_ope
 from django.db.models import F
 from django.utils import timezone
 
+from .credentials import CredentialsFileError, credential_values
 from .models import JobRun, Notification
 
 
@@ -42,8 +42,10 @@ def enqueue_notification(idempotency_key, text):
 
 
 def _credentials():
-    token = os.environ.get("TELEGRAM_BOT_TOKEN", "")
-    chat_id = os.environ.get("TELEGRAM_CHAT_ID", "")
+    try:
+        token, chat_id = credential_values()
+    except CredentialsFileError:
+        raise ConfigurationError("Telegram credentials file is invalid or unsafe") from None
     if not re.fullmatch(r"[0-9]+:[A-Za-z0-9_-]+", token) or not re.fullmatch(
         r"(?:-?[0-9]+|@[A-Za-z0-9_]{5,})", chat_id
     ):
