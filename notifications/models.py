@@ -42,3 +42,32 @@ class JobRun(models.Model):
     failed = models.PositiveIntegerField(default=0)
     uncertain = models.PositiveIntegerField(default=0)
     error = models.CharField(max_length=64, blank=True)
+
+
+class TelegramPollState(models.Model):
+    # Singleton row: only one configured bot is supported by the outbox.
+    id = models.PositiveSmallIntegerField(primary_key=True, default=1, editable=False)
+    next_offset = models.BigIntegerField(default=0)
+    chat_id = models.BigIntegerField()
+    user_id = models.BigIntegerField()
+    last_update_at = models.DateTimeField(null=True, blank=True)
+
+
+class TelegramPollLock(models.Model):
+    id = models.PositiveSmallIntegerField(primary_key=True, default=1, editable=False)
+    acquired_at = models.DateTimeField(auto_now_add=True)
+
+
+class TelegramCommand(models.Model):
+    class Status(models.TextChoices):
+        PENDING = "pending", "Pending"
+        RUNNING = "running", "Running"
+        SUCCEEDED = "succeeded", "Succeeded"
+        FAILED = "failed", "Failed"
+        UNCERTAIN = "uncertain", "Execution uncertain"
+
+    update_id = models.BigIntegerField(unique=True)
+    text = models.TextField()
+    status = models.CharField(max_length=16, choices=Status.choices, default=Status.PENDING)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)

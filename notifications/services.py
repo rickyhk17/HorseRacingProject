@@ -103,7 +103,8 @@ def _send(token, chat_id, text, timeout):
     return "uncertain", "invalid_response", None
 
 
-def process_notifications(*, limit=100, max_attempts=3, retry_delay=300, timeout=10, lease_seconds=900):
+def process_notifications(*, limit=100, max_attempts=3, retry_delay=300, timeout=10, lease_seconds=900,
+                          notification_id=None):
     """Process due notifications and return a persisted JobRun.
 
     Expired claims are marked uncertain, never resent automatically. A crash
@@ -115,16 +116,22 @@ def process_notifications(*, limit=100, max_attempts=3, retry_delay=300, timeout
     try:
         token, chat_id = _credentials()
         now = timezone.now()
-        run.uncertain = Notification.objects.filter(
+        expired = Notification.objects.filter(
             status=Notification.Status.SENDING,
             claimed_at__lt=now - timedelta(seconds=lease_seconds),
-        ).update(
+        )
+        if notification_id is not None:
+            expired = expired.filter(pk=notification_id)
+        run.uncertain = expired.update(
             status=Notification.Status.UNCERTAIN, last_error="expired_claim",
             claim_id=None, updated_at=now,
         )
-        ids = list(Notification.objects.filter(
+        pending = Notification.objects.filter(
             status=Notification.Status.PENDING, next_attempt_at__lte=now,
-        ).order_by("next_attempt_at", "pk").values_list("pk", flat=True)[:limit])
+        )
+        if notification_id is not None:
+            pending = pending.filter(pk=notification_id)
+        ids = list(pending.order_by("next_attempt_at", "pk").values_list("pk", flat=True)[:limit])
         for pk in ids:
             claim_id = uuid.uuid4()
             now = timezone.now()

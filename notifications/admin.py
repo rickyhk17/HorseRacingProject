@@ -1,6 +1,6 @@
 from django.contrib import admin
 
-from .models import JobRun, Notification
+from .models import JobRun, Notification, TelegramCommand
 
 
 class ReadOnlyAdmin(admin.ModelAdmin):
@@ -38,3 +38,11 @@ class JobRunAdmin(ReadOnlyAdmin):
     )
     list_filter = ("status",)
     ordering = ("-started_at",)
+
+
+@admin.register(TelegramCommand)
+class TelegramCommandAdmin(ReadOnlyAdmin):
+    list_display = ("id", "update_id", "status", "created_at", "updated_at")
+    list_filter = ("status",)
+    search_fields = ("update_id",)
+    ordering = ("-created_at",)

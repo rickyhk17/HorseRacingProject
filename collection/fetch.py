@@ -16,6 +16,7 @@ from urllib.parse import parse_qsl, urlsplit
 ORIGINS = {
     "hkjc-racecard": "racing.hkjc.com",
     "hkjc-results": "racing.hkjc.com",
+    "hkjc-resultsall": "racing.hkjc.com",
     "oncc": "racing.on.cc",
     "horseracinghk": "horseracinghk.com",
 }
@@ -64,6 +65,26 @@ def validate_url(url, source):
     except ValueError as exc:
         raise FetchError("Invalid source URL.") from exc
     _normalize_robot_octets(parts.path + ("?" + parts.query if parts.query else ""))
+    if source == "hkjc-resultsall":
+        if parts.path not in {
+            "/zh-hk/local/information/resultsall",
+            "/en-us/local/information/resultsall",
+            "/racing/information/Chinese/Racing/ResultsAll.aspx",
+        }:
+            raise FetchError("Unsupported HKJC page path.")
+        if parts.query:
+            try:
+                pairs = parse_qsl(parts.query, keep_blank_values=True, strict_parsing=True, max_num_fields=2)
+                params = {key.lower(): value for key, value in pairs}
+                if (len(parts.query) > 100 or len(pairs) != len(params)
+                        or set(params) != {"racedate", "racecourse"}
+                        or not re.fullmatch(r"\d{4}/\d{2}/\d{2}", params["racedate"])
+                        or params["racecourse"] not in {"ST", "HV"}):
+                    raise ValueError
+                datetime.strptime(params["racedate"], "%Y/%m/%d")
+            except ValueError:
+                raise FetchError("Invalid HKJC meeting parameters.") from None
+        return parts
     expected = {
         "hkjc-racecard": "/racing/information/Chinese/racing/RaceCard.aspx",
         "hkjc-results": "/racing/information/Chinese/Racing/LocalResults.aspx",
@@ -283,3 +304,28 @@ class PublicFetcher:
             return body.decode(charset, errors="strict")
         except (UnicodeDecodeError, LookupError):
             raise FetchError("Page character encoding could not be decoded.") from None
+
+
+class _SharedFetcher(PublicFetcher):
+    def __init__(self):
+        super().__init__()
+        self.lock = threading.RLock()
+
+    def fetch(self, source, url):
+        with self.lock:
+            return super().fetch(source, url)
+
+
+_shared_fetchers = {}
+_shared_fetchers_lock = threading.Lock()
+
+
+def get_shared_fetcher(source):
+    """Return a process-local per-origin fetcher; lock custom request sequences."""
+    host = ORIGINS.get(source)
+    if not host:
+        raise FetchError("Unsupported source.")
+    with _shared_fetchers_lock:
+        if host not in _shared_fetchers:
+            _shared_fetchers[host] = _SharedFetcher()
+        return _shared_fetchers[host]
